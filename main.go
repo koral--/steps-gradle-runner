@@ -3,14 +3,17 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"github.com/bitrise-steplib/bitrise-step-android-unit-test/testaddon"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bitrise-io/go-android/cache"
+	"github.com/bitrise-io/go-android/gradle"
 	"github.com/bitrise-io/go-steputils/stepconf"
 	"github.com/bitrise-io/go-utils/command"
 	"github.com/bitrise-io/go-utils/log"
@@ -64,6 +67,7 @@ type Config struct {
 	GradleTasks   string `env:"gradle_task,required"`
 	GradlewPath   string `env:"gradlew_path,file"`
 	GradleOptions string `env:"gradle_options"`
+	ProjectLocation      string `env:"project_location,dir"`
 	// Export config
 	AppFileIncludeFilter     string `env:"app_file_include_filter,required"`
 	AppFileExcludeFilter     string `env:"app_file_exclude_filter"`
@@ -78,6 +82,8 @@ type Config struct {
 
 	// Other configs
 	DeployDir string `env:"BITRISE_DEPLOY_DIR"`
+	XMLResultDirPattern  string `env:"result_path_pattern"`
+	TestResultDir string `env:"BITRISE_TEST_RESULT_DIR"`
 
 	// Deprecated
 	ApkFileIncludeFilter string `env:"apk_file_include_filter"`
@@ -222,6 +228,38 @@ func exportEnvironmentWithEnvman(keyStr, valueStr string) error {
 func failf(message string, args ...interface{}) {
 	log.Errorf(message, args...)
 	os.Exit(1)
+}
+
+func workDirRel(pth string) (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Rel(wd, pth)
+}
+
+func tryExportTestAddonArtifact(artifactPth, outputDir string, lastOtherDirIdx int) int {
+	dir := getExportDir(artifactPth)
+
+	if dir == OtherDirName {
+		// start indexing other dir name, to avoid overrideing it
+		// e.g.: other, other-1, other-2
+		lastOtherDirIdx++
+		if lastOtherDirIdx > 0 {
+			dir = dir + "-" + strconv.Itoa(lastOtherDirIdx)
+		}
+	}
+
+	if err := testaddon.ExportArtifact(artifactPth, outputDir, dir); err != nil {
+		log.Warnf("Failed to export test results for test addon: %s", err)
+	} else {
+		src := artifactPth
+		if rel, err := workDirRel(artifactPth); err == nil {
+			src = "./" + rel
+		}
+		log.Printf("  Export [%s => %s]", src, filepath.Join("$BITRISE_TEST_RESULT_DIR", dir, filepath.Base(artifactPth)))
+	}
+	return lastOtherDirIdx
 }
 
 func main() {
@@ -430,4 +468,53 @@ func main() {
 		}
 		log.Donef("The mapping path is now available in the Environment Variable: $BITRISE_MAPPING_PATH (value: %s)", lastCopiedMappingFile)
 	}
+
+	if configs.TestResultDir != "" {
+		// Test Addon is turned on
+		fmt.Println()
+		log.Infof("Export XML results for test addon:")
+		fmt.Println()
+
+		xmlResultFilePattern := configs.XMLResultDirPattern
+		if !strings.HasSuffix(xmlResultFilePattern, "*.xml") {
+			xmlResultFilePattern += "*.xml"
+		}
+		gradleProject, err := gradle.NewProject(configs.ProjectLocation)
+		if err != nil {
+			failf("Failed to open project, error: %s", err)
+		}
+		resultXMLs, err := getArtifacts(gradleProject, time.Now(), xmlResultFilePattern, false, false)
+		if err != nil {
+			log.Warnf("Failed to find test XML test results, error: %s", err)
+		} else {
+			lastOtherDirIdx := -1
+			for _, artifact := range resultXMLs {
+				lastOtherDirIdx = tryExportTestAddonArtifact(artifact.Path, configs.TestResultDir, lastOtherDirIdx)
+			}
+		}
+	}
+}
+
+func getArtifacts(gradleProject gradle.Project, started time.Time, pattern string, includeModuleName bool, isDirectoryMode bool) (artifacts []gradle.Artifact, err error) {
+	for _, t := range []time.Time{started, time.Time{}} {
+		if isDirectoryMode {
+			artifacts, err = gradleProject.FindDirs(t, pattern, includeModuleName)
+		} else {
+			artifacts, err = gradleProject.FindArtifacts(t, pattern, includeModuleName)
+		}
+		if err != nil {
+			return
+		}
+		if len(artifacts) == 0 {
+			if t == started {
+				log.Warnf("No artifacts found with pattern: %s that has modification time after: %s", pattern, t)
+				log.Warnf("Retrying without modtime check....")
+				fmt.Println()
+				continue
+			}
+			log.Warnf("No artifacts found with pattern: %s without modtime check", pattern)
+			log.Warnf("If you have changed default report export path in your gradle files then you might need to change ReportPathPattern accordingly.")
+		}
+	}
+	return
 }

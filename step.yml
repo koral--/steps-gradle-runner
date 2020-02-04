@@ -23,6 +23,12 @@ toolkit:
   go:
     package_name: github.com/bitrise-io/steps-gradle-runner
 inputs:
+  - project_location: $BITRISE_SOURCE_DIR
+    opts:
+      title: Project Location
+      summary: "The root directory of your android project, for example, where your root build gradle file exists (also gradlew, settings.gradle, etc...)"
+      description: "The root directory of your android project, for example, where your root build gradle file exists (also gradlew, settings.gradle, etc...)"
+      is_required: true
   - gradle_file: $GRADLE_BUILD_FILE_PATH
     opts:
       category: Config
@@ -173,7 +179,32 @@ inputs:
 
         ```
         */beta/mapping.txt
-        ``` 
+        ```
+  - result_path_pattern: "*build/test-results"
+    opts:
+      category: Options
+      title: Local unit test XML result directory pattern
+      description: |-
+        The step will use this pattern to export __Local unit test XML results__.
+        The whole XML results directory will be zipped and moved to the `$BITRISE_DEPLOY_DIR`
+        and the result files will be deployed to the Ship Addon.
+
+        You need to override this input if you have custom output dir set for Local unit test XML results.
+        The pattern needs to be relative to the selected module's directory.
+
+        Example 1: app module and debug variant is selected and the XML report is generated at:
+
+        - `<path_to_your_project>/app/build/test-results/testDebugUnitTest`
+
+        this case use: `*build/test-results/testDebugUnitTest` pattern.
+
+        Example 2: app module and NO variant is selected and the XML reports are generated at:
+
+        - `<path_to_your_project>/app/build/test-results/testDebugUnitTest`
+        - `<path_to_your_project>/app/build/test-results/testReleaseUnitTest`
+
+        to export every variant's reports use: `*build/test-results` pattern.
+      is_required: true
   - cache_level: "only_deps"
     opts:
       category: Debug
